@@ -8,34 +8,71 @@ const MODEL = "gemini-2.5-flash-preview-05-20";
 // 创建AI客户端
 const ai = new GoogleGenAI({ apiKey: API_KEY });
 
-// 处理上传的文件并调用Gemini API
-async function handleFileUpload(formData: FormData) {
+// 从URL获取文件并上传到Gemini
+async function fetchAndUploadFile(url: string) {
   try {
-    // 从FormData中获取文件
-    const file = formData.get("file");
-    
-    if (!file || !(file instanceof Blob)) {
-      return new Response(JSON.stringify({ error: "没有找到文件或文件格式不正确" }), {
-        status: 400,
-        headers: { "Content-Type": "application/json" },
-      });
+    // 获取远程文件
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`获取文件失败: ${response.status} ${response.statusText}`);
     }
     
     // 获取文件类型
-    const mimeType = file.type || "application/octet-stream";
+    const mimeType = response.headers.get("Content-Type") || "application/octet-stream";
     
-    // 获取提示文本（如果有）
-    const prompt = formData.get("prompt") || "描述这个文件内容";
+    // 转换为Blob
+    const blob = await response.blob();
     
     // 上传文件到Gemini
     const uploadedFile = await ai.files.upload({
-      file: file,
+      file: blob,
       config: { mimeType },
     });
     
-    // 获取文件详细信息
-    const fileName = uploadedFile.name;
-    const fetchedFile = await ai.files.get({ name: fileName });
+    return { uploadedFile, mimeType };
+  } catch (error) {
+    console.error("获取或上传文件时出错:", error);
+    throw error;
+  }
+}
+
+// 处理上传的文件并调用Gemini API
+async function handleFileUpload(formData: FormData) {
+  try {
+    let uploadedFile;
+    let mimeType;
+    
+    // 检查是否提供了FileURL参数
+    const fileUrl = formData.get("FileURL");
+    
+    if (fileUrl && typeof fileUrl === "string") {
+      // 从URL获取并上传文件
+      const result = await fetchAndUploadFile(fileUrl);
+      uploadedFile = result.uploadedFile;
+      mimeType = result.mimeType;
+    } else {
+      // 从FormData中获取文件
+      const file = formData.get("file");
+      
+      if (!file || !(file instanceof Blob)) {
+        return new Response(JSON.stringify({ error: "没有找到文件或文件格式不正确，也没有提供有效的FileURL" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      
+      // 获取文件类型
+      mimeType = file.type || "application/octet-stream";
+      
+      // 上传文件到Gemini
+      uploadedFile = await ai.files.upload({
+        file: file,
+        config: { mimeType },
+      });
+    }
+    
+    // 获取提示文本（如果有）
+    const prompt = formData.get("prompt") || "描述这个文件内容";
     
     // 调用Gemini API生成内容
     const response = await ai.models.generateContent({
@@ -46,14 +83,12 @@ async function handleFileUpload(formData: FormData) {
       ]),
     });
     
-    // 返回Gemini的完整响应，包括文件信息
+    // 返回简化的响应，只包含content、uri和mimeType
     return new Response(JSON.stringify({
       success: true,
-      result: response,
-      file_info: {
-        uploaded_file: uploadedFile,
-        fetched_file: fetchedFile
-      }
+      content: response.candidates?.[0]?.content?.parts?.[0]?.text || "",
+      uri: uploadedFile.uri,
+      mimeType: mimeType
     }), {
       headers: { "Content-Type": "application/json" },
     });
@@ -66,30 +101,35 @@ async function handleFileUpload(formData: FormData) {
   }
 }
 
-// 处理直接发送的JSON请求（包含URI信息）
+// 处理JSON请求并调用Gemini API
 async function handleJsonRequest(data: any) {
   try {
-    if (!data || !data.content) {
-      return new Response(JSON.stringify({ error: "请求格式不正确，缺少content字段" }), {
+    let uri;
+    let mimeType;
+    
+    // 检查是否提供了FileURL参数
+    if (data.FileURL && typeof data.FileURL === "string") {
+      // 从URL获取并上传文件
+      const result = await fetchAndUploadFile(data.FileURL);
+      uri = result.uploadedFile.uri;
+      mimeType = result.mimeType;
+    } else if (data.uri) {
+      // 使用提供的uri
+      uri = data.uri;
+      mimeType = data.mimeType || "image/jpeg";
+    } else if (data.content && data.content.fileData && data.content.fileData.uri) {
+      // 从请求中提取URI和mimeType
+      uri = data.content.fileData.uri;
+      mimeType = data.content.fileData.mimeType;
+    } else {
+      return new Response(JSON.stringify({ error: "缺少必要的uri参数或FileURL参数" }), {
         status: 400,
         headers: { "Content-Type": "application/json" },
       });
     }
-
-    // 提取请求内容
-    const { content, prompt } = data;
     
-    // 检查是否包含文件URI信息
-    if (!content.fileData || !content.fileData.uri || !content.fileData.mimeType) {
-      return new Response(JSON.stringify({ error: "请求格式不正确，缺少文件URI信息" }), {
-        status: 400,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-    
-    // 从请求中提取URI和mimeType
-    const { uri, mimeType } = content.fileData;
-    const userPrompt = prompt || "描述这个内容";
+    // 使用默认的提示文本（如果未提供）
+    const userPrompt = data.prompt || "描述这个文件内容";
     
     // 调用Gemini API生成内容
     const response = await ai.models.generateContent({
@@ -100,15 +140,12 @@ async function handleJsonRequest(data: any) {
       ]),
     });
     
-    // 返回Gemini的完整响应
+    // 返回简化的响应，只包含content、uri和mimeType
     return new Response(JSON.stringify({
       success: true,
-      result: response,
-      request_info: {
-        uri: uri,
-        mimeType: mimeType,
-        prompt: userPrompt
-      }
+      content: response.candidates?.[0]?.content?.parts?.[0]?.text || "",
+      uri: uri,
+      mimeType: mimeType
     }), {
       headers: { "Content-Type": "application/json" },
     });
