@@ -66,6 +66,61 @@ async function handleFileUpload(formData: FormData) {
   }
 }
 
+// 处理直接发送的JSON请求（包含URI信息）
+async function handleJsonRequest(data: any) {
+  try {
+    if (!data || !data.content) {
+      return new Response(JSON.stringify({ error: "请求格式不正确，缺少content字段" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // 提取请求内容
+    const { content, prompt } = data;
+    
+    // 检查是否包含文件URI信息
+    if (!content.fileData || !content.fileData.uri || !content.fileData.mimeType) {
+      return new Response(JSON.stringify({ error: "请求格式不正确，缺少文件URI信息" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    
+    // 从请求中提取URI和mimeType
+    const { uri, mimeType } = content.fileData;
+    const userPrompt = prompt || "描述这个内容";
+    
+    // 调用Gemini API生成内容
+    const response = await ai.models.generateContent({
+      model: MODEL,
+      contents: createUserContent([
+        createPartFromUri(uri, mimeType),
+        userPrompt,
+      ]),
+    });
+    
+    // 返回Gemini的完整响应
+    return new Response(JSON.stringify({
+      success: true,
+      result: response,
+      request_info: {
+        uri: uri,
+        mimeType: mimeType,
+        prompt: userPrompt
+      }
+    }), {
+      headers: { "Content-Type": "application/json" },
+    });
+  } catch (error) {
+    console.error("处理JSON请求时出错:", error);
+    return new Response(JSON.stringify({ error: error.message }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+}
+
 // 处理请求
 async function handler(req: Request): Promise<Response> {
   // 允许跨域请求
@@ -96,8 +151,12 @@ async function handler(req: Request): Promise<Response> {
       // 处理表单数据
       const formData = await req.formData();
       return await handleFileUpload(formData);
+    } else if (contentType.includes("application/json")) {
+      // 处理JSON请求
+      const data = await req.json();
+      return await handleJsonRequest(data);
     } else {
-      return new Response(JSON.stringify({ error: "请使用multipart/form-data格式上传文件" }), {
+      return new Response(JSON.stringify({ error: "请使用multipart/form-data格式上传文件或application/json格式发送请求" }), {
         status: 400,
         headers: { ...headers, "Content-Type": "application/json" },
       });
