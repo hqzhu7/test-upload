@@ -33,6 +33,10 @@ async function handleFileUpload(formData: FormData) {
       config: { mimeType },
     });
     
+    // 获取文件详细信息
+    const fileName = uploadedFile.name;
+    const fetchedFile = await ai.files.get({ name: fileName });
+    
     // 调用Gemini API生成内容
     const response = await ai.models.generateContent({
       model: MODEL,
@@ -42,10 +46,14 @@ async function handleFileUpload(formData: FormData) {
       ]),
     });
     
-    // 返回Gemini的完整响应
+    // 返回Gemini的完整响应，包括文件信息
     return new Response(JSON.stringify({
       success: true,
       result: response,
+      file_info: {
+        uploaded_file: uploadedFile,
+        fetched_file: fetchedFile
+      }
     }), {
       headers: { "Content-Type": "application/json" },
     });
