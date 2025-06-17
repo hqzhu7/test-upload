@@ -42,10 +42,10 @@ async function handleFileUpload(formData: FormData) {
       ]),
     });
     
-    // 返回Gemini的响应
+    // 返回Gemini的完整响应
     return new Response(JSON.stringify({
       success: true,
-      result: response.text,
+      result: response,
     }), {
       headers: { "Content-Type": "application/json" },
     });
