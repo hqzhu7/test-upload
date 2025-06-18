@@ -145,7 +145,12 @@ async function handleJsonRequest(data: any) {
     }
     
     // 处理文件上传
-    const uploadedFiles = [];
+    interface FileInfo {
+      uri: string;
+      mimeType: string;
+    }
+    
+    const uploadedFiles: FileInfo[] = [];
     if (fileURLs.length > 0) {
       // 并行上传所有文件
       const uploadPromises = fileURLs.map(url => fetchAndUploadFile(url));
@@ -181,60 +186,60 @@ async function handleJsonRequest(data: any) {
     }
     
     // 准备Gemini API请求内容
-    let contents: any;
-    
-    // 如果有历史记录，处理历史记录
-    if (messageHistory.length > 0) {
-      // 转换历史记录为Gemini API格式
-      const formattedHistory = messageHistory.map(msg => {
-        // 简单检查消息格式，避免过度验证影响性能
-        const role = msg.role === "user" ? "user" : "model";
-        
-        // 处理包含文件数据的消息
-        if (msg.fileData && msg.fileData.uri) {
-          return {
-            role,
-            parts: [
-              { inlineData: { mimeType: msg.fileData.mimeType || "image/jpeg", data: msg.fileData.uri } },
-              { text: msg.content || "" }
-            ]
-          };
-        }
-        
-        // 处理纯文本消息
-        return {
-          role,
-          parts: [{ text: msg.content || "" }]
-        };
-      });
-      
-      // 添加当前用户消息
-      const currentUserParts = [];
-      
-      // 添加上传的文件
-      for (const file of uploadedFiles) {
-        currentUserParts.push(createPartFromUri(file.uri, file.mimeType));
-      }
-      
-      // 添加用户提示文本
-      currentUserParts.push(userPrompt);
-      
-      // 创建完整的请求内容
-      contents = [...formattedHistory, createUserContent(currentUserParts)];
-    } else {
-      // 没有历史记录，只使用当前消息
-      const parts = [];
-      
-      // 添加上传的文件
-      for (const file of uploadedFiles) {
-        parts.push(createPartFromUri(file.uri, file.mimeType));
-      }
-      
-      // 添加用户提示文本
-      parts.push(userPrompt);
-      
-      contents = createUserContent(parts);
-    }
+     let contents: any;
+     
+     // 如果有历史记录，处理历史记录
+     if (messageHistory.length > 0) {
+       // 转换历史记录为Gemini API格式
+       const formattedHistory = messageHistory.map(msg => {
+         // 简单检查消息格式，避免过度验证影响性能
+         const role = msg.role === "user" ? "user" : "model";
+         
+         // 处理包含文件数据的消息
+         if (msg.fileData && msg.fileData.uri) {
+           return {
+             role,
+             parts: [
+               { inlineData: { mimeType: msg.fileData.mimeType || "image/jpeg", data: msg.fileData.uri } },
+               { text: msg.content || "" }
+             ]
+           };
+         }
+         
+         // 处理纯文本消息
+         return {
+           role,
+           parts: [{ text: msg.content || "" }]
+         };
+       });
+       
+       // 添加当前用户消息
+       const currentUserParts: any[] = [];
+       
+       // 添加上传的文件
+       for (const file of uploadedFiles) {
+         currentUserParts.push(createPartFromUri(file.uri, file.mimeType));
+       }
+       
+       // 添加用户提示文本
+       currentUserParts.push(userPrompt);
+       
+       // 创建完整的请求内容
+       contents = [...formattedHistory, createUserContent(currentUserParts)];
+     } else {
+       // 没有历史记录，只使用当前消息
+       const parts: any[] = [];
+       
+       // 添加上传的文件
+       for (const file of uploadedFiles) {
+         parts.push(createPartFromUri(file.uri, file.mimeType));
+       }
+       
+       // 添加用户提示文本
+       parts.push(userPrompt);
+       
+       contents = createUserContent(parts);
+     }
     
     // 调用Gemini API生成内容
     const response = await ai.models.generateContent({
@@ -246,8 +251,8 @@ async function handleJsonRequest(data: any) {
     return new Response(JSON.stringify({
       success: true,
       content: response.candidates?.[0]?.content?.parts?.[0]?.text || "",
-      uri: uploadedFiles.length > 0 ? uploadedFiles.map(f => f.uri) : undefined,
-      mimeType: uploadedFiles.length > 0 ? uploadedFiles.map(f => f.mimeType) : undefined
+      uri: uploadedFiles.length > 0 ? uploadedFiles.map((f: FileInfo) => f.uri) : undefined,
+      mimeType: uploadedFiles.length > 0 ? uploadedFiles.map((f: FileInfo) => f.mimeType) : undefined
     }), {
       headers: { "Content-Type": "application/json" },
     });
