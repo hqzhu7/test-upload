@@ -2,7 +2,6 @@ import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { GoogleGenAI, createUserContent, createPartFromUri } from "npm:@google/genai";
 
 // 配置Google GenAI API
-// 注意: 确保你的 API_KEY 是有效的
 const API_KEY = "AIzaSyAPgNkJpYrO90jKlG4Y3v1jdrAsM2A-_Yc";
 const MODEL = "gemini-2.5-flash-preview-05-20";
 
@@ -41,11 +40,9 @@ async function handleJsonRequest(data: any) {
     const newlyUploadedFilesInfo: { uri: string; mimeType: string }[] = [];
 
     // --- 1. 处理 MessageHistory (历史对话记录) ---
-    // data.MessageHistory 可能是 undefined, null, 或非数组
     if (data.MessageHistory && Array.isArray(data.MessageHistory)) {
       console.log(`Processing MessageHistory: ${data.MessageHistory.length} items`);
       for (const historyItem of data.MessageHistory) {
-        // 确保 historyItem 是一个对象且有 role
         if (typeof historyItem !== "object" || historyItem === null || typeof historyItem.role !== "string") {
           console.warn("Skipping malformed history item (not object or missing role):", historyItem);
           continue;
@@ -56,34 +53,30 @@ async function handleJsonRequest(data: any) {
         // 处理历史消息中的文本部分
         if (typeof historyItem.text === "string" && historyItem.text.trim()) {
           geminiPartsForHistory.push(historyItem.text);
-          console.log(`Added history text for role '${historyItem.role}': ${historyItem.text.substring(0, 50)}...`);
+          console.log(`Added history text for role '${historyItem.role}': ${historyItem.text.substring(0, Math.min(historyItem.text.length, 50))}...`);
         }
 
-        // 处理历史消息中的 fileData (可能是 JSON 字符串或列表)
-        // Coze 插件现在发送的是字符串形式的 fileData
-        const rawFileData = historyItem.fileData;
+        // --- 核心修改：处理历史消息中的 filedata (小写 'd') ---
+        const rawFileData = historyItem.filedata; // <--- 这里从 fileData 改为 filedata (小写)
         let parsedFileData: any[] = [];
 
         if (typeof rawFileData === "string" && rawFileData.trim()) {
             try {
                 // 尝试解析为 JSON 数组
                 parsedFileData = JSON.parse(rawFileData);
-                console.log(`Parsed fileData string for role '${historyItem.role}':`, parsedFileData);
+                console.log(`Parsed filedata string for role '${historyItem.role}':`, parsedFileData);
             } catch (parseError) {
-                console.warn(`Failed to parse fileData string for role '${historyItem.role}': ${rawFileData}`, parseError);
-                // 解析失败则忽略此 fileData
+                console.warn(`Failed to parse filedata string for role '${historyItem.role}': ${rawFileData}`, parseError);
             }
         } else if (Array.isArray(rawFileData)) {
-            // 如果已经是数组，直接使用
             parsedFileData = rawFileData;
-            console.log(`Received fileData as array for role '${historyItem.role}':`, parsedFileData);
+            console.log(`Received filedata as array for role '${historyItem.role}':`, parsedFileData);
         } else if (rawFileData !== undefined && rawFileData !== null) {
-            console.warn(`Unsupported fileData type for role '${historyItem.role}': ${typeof rawFileData}`, rawFileData);
+            console.warn(`Unsupported filedata type for role '${historyItem.role}': ${typeof rawFileData}`, rawFileData);
         }
 
         if (Array.isArray(parsedFileData)) {
             for (const fileDataItem of parsedFileData) {
-                // 确保 fileDataItem 是一个对象且有 uri 和 mimeType
                 if (typeof fileDataItem === "object" && fileDataItem !== null &&
                     typeof fileDataItem.uri === "string" && fileDataItem.uri.trim() &&
                     typeof fileDataItem.mimeType === "string" && fileDataItem.mimeType.trim()) {
@@ -91,7 +84,6 @@ async function handleJsonRequest(data: any) {
                     let fileUriToUse = fileDataItem.uri;
                     let fileMimeType = fileDataItem.mimeType;
 
-                    // 如果URI不是Gemini已上传的URL或file://，则需要上传
                     if (!fileUriToUse.startsWith("file://") && !fileUriToUse.startsWith("https://generativelanguage.googleapis.com/v1beta/files/")) {
                         try {
                             const { uploadedFile, mimeType } = await fetchAndUploadFile(fileUriToUse);
@@ -101,7 +93,7 @@ async function handleJsonRequest(data: any) {
                             console.log(`Uploaded and added new file from history: ${fileUriToUse}`);
                         } catch (uploadError) {
                             console.error(`Failed to upload file from history (${fileUriToUse}):`, uploadError);
-                            continue; // 跳过此文件
+                            continue;
                         }
                     } else {
                         console.log(`Using existing file URI from history: ${fileUriToUse}`);
@@ -127,16 +119,14 @@ async function handleJsonRequest(data: any) {
     // --- 2. 处理 input (当前用户消息文本) 和 fileURL (当前用户消息文件) ---
     const currentUserParts: any[] = [];
     
-    // input 是必定有的字符串
     const userInput = data.input; 
     if (typeof userInput === "string" && userInput.trim()) {
       currentUserParts.push(userInput);
-      console.log(`Added current user input text: ${userInput.substring(0, 50)}...`);
+      console.log(`Added current user input text: ${userInput.substring(0, Math.min(userInput.length, 50))}...`);
     } else {
-        console.warn("Current user input is missing or not a valid string.");
+        console.log("Current user input is missing or not a valid string.");
     }
 
-    // fileURL 处理：可能没有、空、单个字符串或逗号分隔的字符串、列表
     const userFileURL = data.fileURL;
     let currentFileURLs: string[] = [];
 
@@ -163,11 +153,9 @@ async function handleJsonRequest(data: any) {
             console.log(`Uploaded and added new file from current input: ${url}`);
         } catch (uploadError) {
             console.error(`Failed to upload file from current input (${url}):`, uploadError);
-            // 失败不阻止流程，继续处理下一个
         }
     }
 
-    // 如果当前用户消息有内容，则添加到最终内容列表
     if (currentUserParts.length > 0) {
         finalContents.push(createUserContent(currentUserParts, "user"));
         console.log("Added current user content to finalContents.");
@@ -175,7 +163,6 @@ async function handleJsonRequest(data: any) {
         console.log("Current user content has no valid parts.");
     }
 
-    // --- 检查是否有足够的内容调用 Gemini API ---
     if (finalContents.length === 0) {
       console.warn("No valid content found in input/fileURL or MessageHistory to send to Gemini.");
       return new Response(JSON.stringify({
@@ -192,17 +179,17 @@ async function handleJsonRequest(data: any) {
     console.log("Final contents sending to Gemini:", JSON.stringify(finalContents, null, 2));
     const geminiResponse = await ai.models.generateContent({
       model: MODEL,
-      contents: finalContents, // contents 数组现在是完整的对话历史，包括当前用户消息
+      contents: finalContents,
     });
 
     const generatedText = geminiResponse.candidates?.[0]?.content?.parts?.[0]?.text || "";
-    console.log(`Gemini generated text: ${generatedText.substring(0, 100)}...`);
+    console.log(`Gemini generated text: ${generatedText.substring(0, Math.min(generatedText.length, 100))}...`);
 
     // --- 4. 返回结果 ---
     return new Response(JSON.stringify({
       success: true,
       response: generatedText,
-      fileDatas: newlyUploadedFilesInfo // 返回新上传的文件信息
+      fileDatas: newlyUploadedFilesInfo
     }), {
       headers: { "Content-Type": "application/json" },
     });
@@ -213,7 +200,7 @@ async function handleJsonRequest(data: any) {
       success: false,
       response: `内部服务器错误: ${error.message || "未知错误"}`,
       fileDatas: [],
-      details: error.stack // 错误详情保留，便于调试
+      details: error.stack
     }), {
       status: 500,
       headers: { "Content-Type": "application/json" },
