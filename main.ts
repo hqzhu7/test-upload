@@ -4,7 +4,7 @@ import { GoogleGenAI, createUserContent, createPartFromUri } from "npm:@google/g
 // 配置Google GenAI API
 // 注意: 确保你的 API_KEY 是有效的
 const API_KEY = "AIzaSyAPgNkJpYrO90jKlG4Y3v1jdrAsM2A-_Yc"; 
-const MODEL = "gemini-2.5-flash-preview-05-20"; // 建议使用最新的稳定模型
+const MODEL = "gemini-2.5-flash-preview-05-20"; 
 
 // 创建AI客户端
 const ai = new GoogleGenAI({ apiKey: API_KEY });
@@ -36,7 +36,6 @@ async function fetchAndUploadFile(url: string) {
 async function handleJsonRequest(data: any) {
   try {
     const finalContents: any[] = [];
-    // 仅用于存储通过 fetchAndUploadFile 实际上传的新文件信息
     const newlyUploadedFilesInfo: { uri: string; mimeType: string }[] = []; 
 
     // --- 1. 处理 MessageHistory (历史对话记录) ---
@@ -57,14 +56,12 @@ async function handleJsonRequest(data: any) {
             let fileUriToUse = part.fileData.uri;
             let fileMimeType = part.fileData.mimeType || "image/jpeg";
 
-            // 检查 URI 是否是外部 URL (即非 Gemini 内部 URI)，如果是，则需要上传
             if (!fileUriToUse.startsWith("file://") && !fileUriToUse.startsWith("https://generativelanguage.googleapis.com/v1beta/files/")) {
               const { uploadedFile, mimeType } = await fetchAndUploadFile(fileUriToUse);
-              fileUriToUse = uploadedFile.uri; // 更新为上传后的URI
-              fileMimeType = mimeType; // 更新为上传后的MIME类型
-              newlyUploadedFilesInfo.push({ uri: fileUriToUse, mimeType: fileMimeType }); // 记录新上传的文件信息
+              fileUriToUse = uploadedFile.uri; 
+              fileMimeType = mimeType; 
+              newlyUploadedFilesInfo.push({ uri: fileUriToUse, mimeType: fileMimeType }); 
             }
-            // 如果已经是 Gemini URI，则不需要重新上传，也不需要添加到 newlyUploadedFilesInfo
             geminiPartsForHistory.push(createPartFromUri(fileUriToUse, fileMimeType));
           }
         }
@@ -92,15 +89,18 @@ async function handleJsonRequest(data: any) {
       }
 
       for (const url of currentFileURLs) {
-        // newchat 中的文件总被视为新文件，因为它们是用户本次提交的
         const { uploadedFile, mimeType } = await fetchAndUploadFile(url);
-        newlyUploadedFilesInfo.push({ uri: uploadedFile.uri, mimeType: mimeType }); // 记录新上传的文件信息
+        newlyUploadedFilesInfo.push({ uri: uploadedFile.uri, mimeType: mimeType }); 
         currentUserParts.push(createPartFromUri(uploadedFile.uri, mimeType));
       }
     }
 
     if (currentUserParts.length === 0 && finalContents.length === 0) {
-      return new Response(JSON.stringify({ error: "No valid content found in newchat or MessageHistory to send to Gemini." }), {
+      return new Response(JSON.stringify({ 
+        success: false,
+        response: "No valid content found in newchat or MessageHistory to send to Gemini.",
+        fileDatas: [] // 明确返回空数组
+      }), {
         status: 400,
         headers: { "Content-Type": "application/json" },
       });
@@ -115,11 +115,11 @@ async function handleJsonRequest(data: any) {
     
     const generatedText = geminiResponse.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
-    // --- 4. 返回结果 ---
+    // --- 4. 返回结果 (精简格式) ---
     return new Response(JSON.stringify({
       success: true,
       response: generatedText, 
-      newly_uploaded_files_info: newlyUploadedFilesInfo // 只返回新上传的文件信息
+      fileDatas: newlyUploadedFilesInfo // 精简为 fileDatas
     }), {
       headers: { "Content-Type": "application/json" },
     });
@@ -129,7 +129,8 @@ async function handleJsonRequest(data: any) {
     return new Response(JSON.stringify({ 
       success: false,
       response: `Internal Server Error: ${error.message || "Unknown error"}`,
-      details: error.stack 
+      fileDatas: [], // 错误时也返回空数组
+      details: error.stack // 错误详情保留
     }), {
       status: 500,
       headers: { "Content-Type": "application/json" },
@@ -174,6 +175,7 @@ async function handler(req: Request): Promise<Response> {
     return new Response(JSON.stringify({ 
       success: false,
       response: `Request processing failed: ${error.message || "Unknown error"}`,
+      fileDatas: [], // 错误时也返回空数组
       details: error.stack
     }), {
       status: 500,
