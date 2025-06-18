@@ -1,10 +1,6 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { GoogleGenAI, createUserContent, createPartFromUri } from "npm:@google/genai";
 
-// 移除硬编码的 API_KEY 和 MODEL
-// const API_KEY = "AIzaSyAPgNkJpYrO90jKlG4Y3v1jdrAsM2A-_Yc"; // 替换为你的 Gemini API Key
-// const MODEL = "gemini-2.5-flash-preview-05-20"; // 默认模型，但现在可以动态覆盖
-
 // AI客户端的初始化将移到 handleJsonRequest 内部，以便使用动态 API Key
 let ai: GoogleGenAI; 
 
@@ -40,18 +36,19 @@ async function handleJsonRequest(data: any) {
     const newlyUploadedFilesInfo: { uri: string; mimeType: string }[] = [];
 
     // --- 获取动态参数 ---
-    const apiKey = data.API_KEY; // 从请求中获取 API_KEY
+    // 严格按照你的输入参数： apikey
+    const apiKey = data.apikey; // 从请求中获取 apikey
     if (!apiKey) {
       return new Response(JSON.stringify({
         success: false,
-        response: "API_KEY is missing in the request payload.",
+        response: "apikey is missing in the request payload.", // 错误信息也更正
         fileDatas: []
       }), {
         status: 400,
         headers: { "Content-Type": "application/json" },
       });
     }
-    // 每次请求都使用动态的 API_KEY 初始化 AI 客户端
+    // 每次请求都使用动态的 apikey 初始化 AI 客户端
     ai = new GoogleGenAI({ apiKey: apiKey });
 
     // 获取 temperature
