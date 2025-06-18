@@ -2,28 +2,29 @@ import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { GoogleGenAI, createUserContent, createPartFromUri } from "npm:@google/genai";
 
 // 配置Google GenAI API
-const API_KEY = "AIzaSyAPgNkJpYrO90jKlG4Y3v1jdrAsM2A-_Yc";
+// 注意: 确保你的 API_KEY 是有效的
+const API_KEY = "AIzaSyAPgNkJpYrO90jKlG4Y3v1jdrAsM2A-_Yc"; 
 const MODEL = "gemini-2.5-flash-preview-05-20";
 
 // 创建AI客户端
 const ai = new GoogleGenAI({ apiKey: API_KEY });
 
-// 从URL获取文件并上传到Gemini
+// 辅助函数：从URL获取文件并上传到Gemini File API
 async function fetchAndUploadFile(url: string) {
   try {
     // 获取远程文件
     const response = await fetch(url);
     if (!response.ok) {
-      throw new Error(`获取文件失败: ${response.status} ${response.statusText}`);
+      throw new Error(`Failed to fetch file from URL: ${url}, Status: ${response.status} ${response.statusText}`);
     }
     
-    // 获取文件类型
+    // 获取文件类型，如果无法确定则默认为八位字节流
     const mimeType = response.headers.get("Content-Type") || "application/octet-stream";
     
     // 转换为Blob
     const blob = await response.blob();
     
-    // 上传文件到Gemini
+    // 上传文件到Gemini File API
     const uploadedFile = await ai.files.upload({
       file: blob,
       config: { mimeType },
@@ -31,283 +32,167 @@ async function fetchAndUploadFile(url: string) {
     
     return { uploadedFile, mimeType };
   } catch (error) {
-    console.error("获取或上传文件时出错:", error);
-    throw error;
+    console.error(`Error fetching or uploading file from ${url}:`, error);
+    throw error; // 重新抛出错误以便上层捕获
   }
 }
 
-// 处理上传的文件并调用Gemini API
-async function handleFileUpload(formData: FormData) {
-  try {
-    let uploadedFile;
-    let mimeType;
-    
-    // 检查是否提供了FileURL参数
-    const fileUrl = formData.get("FileURL");
-    
-    if (fileUrl && typeof fileUrl === "string") {
-      // 从URL获取并上传文件
-      const result = await fetchAndUploadFile(fileUrl);
-      uploadedFile = result.uploadedFile;
-      mimeType = result.mimeType;
-    } else {
-      // 从FormData中获取文件
-      const file = formData.get("file");
-      
-      if (!file || !(file instanceof Blob)) {
-        return new Response(JSON.stringify({ error: "没有找到文件或文件格式不正确，也没有提供有效的FileURL" }), {
-          status: 400,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      
-      // 获取文件类型
-      mimeType = file.type || "application/octet-stream";
-      
-      // 上传文件到Gemini
-      uploadedFile = await ai.files.upload({
-        file: file,
-        config: { mimeType },
-      });
-    }
-    
-    // 获取提示文本（如果有）
-    const prompt = formData.get("prompt") || "描述这个文件内容";
-    
-    // 调用Gemini API生成内容
-    const response = await ai.models.generateContent({
-      model: MODEL,
-      contents: createUserContent([
-        createPartFromUri(uploadedFile.uri, mimeType),
-        prompt.toString(),
-      ]),
-    });
-    
-    // 返回简化的响应，只包含content、uri和mimeType
-    return new Response(JSON.stringify({
-      success: true,
-      content: response.candidates?.[0]?.content?.parts?.[0]?.text || "",
-      uri: uploadedFile.uri,
-      mimeType: mimeType
-    }), {
-      headers: { "Content-Type": "application/json" },
-    });
-  } catch (error) {
-    console.error("处理文件时出错:", error);
-    return new Response(JSON.stringify({ error: error.message }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
-}
-
-// 处理JSON请求并调用Gemini API
+// 主请求处理函数：处理来自扣子工具的 JSON 请求
 async function handleJsonRequest(data: any) {
   try {
-    // 检查是否有新格式的请求结构
-    const hasNewFormat = data.newchat !== undefined;
-    let userPrompt = "描述这个文件内容";
-    let fileURLs: string[] = [];
-    let messageHistory: any[] = [];
-    
-    // 处理新格式的请求
-    if (hasNewFormat) {
-      // 获取newchat中的输入内容
-      if (data.newchat.input) {
-        userPrompt = data.newchat.input;
-      }
-      
-      // 获取newchat中的fileURL(s)
-      if (data.newchat.fileURL) {
-        if (Array.isArray(data.newchat.fileURL)) {
-          fileURLs = data.newchat.fileURL.filter(url => typeof url === "string");
-        } else if (typeof data.newchat.fileURL === "string") {
-          fileURLs = [data.newchat.fileURL];
+    const finalContents: any[] = []; // 最终发送给 Gemini API 的 contents 数组
+
+    // --- 1. 处理 MessageHistory (历史对话记录) ---
+    // 扣子工具发送的 MessageHistory 已经是 Gemini API contents 格式的数组
+    // 但内部的 parts 需要进一步处理，特别是 fileData.uri
+    if (data.MessageHistory && Array.isArray(data.MessageHistory)) {
+      for (const historyItem of data.MessageHistory) {
+        // 验证 historyItem 结构
+        if (typeof historyItem.role !== "string" || !Array.isArray(historyItem.parts)) {
+          console.warn("Skipping malformed history item:", historyItem);
+          continue; // 跳过格式不正确的历史项
         }
-      }
-      
-      // 获取MessageHistory
-      if (data.MessageHistory && Array.isArray(data.MessageHistory)) {
-        messageHistory = data.MessageHistory;
-      }
-    } else {
-      // 处理旧格式的请求
-      userPrompt = data.prompt || userPrompt;
-      
-      // 检查是否提供了FileURL参数
-      if (data.FileURL) {
-        if (Array.isArray(data.FileURL)) {
-          fileURLs = data.FileURL.filter(url => typeof url === "string");
-        } else if (typeof data.FileURL === "string") {
-          fileURLs = [data.FileURL];
+
+        const geminiPartsForHistory: any[] = [];
+        for (const part of historyItem.parts) {
+          if (typeof part.text === "string") {
+            geminiPartsForHistory.push(part.text);
+          } else if (part.fileData && typeof part.fileData.uri === "string") {
+            // 检查 URI 是否已经是 Gemini File API 的引用
+            if (part.fileData.uri.startsWith("file://") || part.fileData.uri.startsWith("https://generativelanguage.googleapis.com/v1beta/files/")) {
+              geminiPartsForHistory.push(createPartFromUri(part.fileData.uri, part.fileData.mimeType || "image/jpeg"));
+            } else {
+              // 外部 URL 需要重新上传到 Gemini File API
+              const { uploadedFile, mimeType } = await fetchAndUploadFile(part.fileData.uri);
+              geminiPartsForHistory.push(createPartFromUri(uploadedFile.uri, mimeType));
+            }
+          }
+        }
+        
+        // 只有当历史项包含有效内容时才添加
+        if (geminiPartsForHistory.length > 0) {
+          finalContents.push(createUserContent(geminiPartsForHistory, historyItem.role));
         }
       }
     }
-    
-    // 处理文件上传
-    interface FileInfo {
-      uri: string;
-      mimeType: string;
-    }
-    
-    const uploadedFiles: FileInfo[] = [];
-    if (fileURLs.length > 0) {
-      // 并行上传所有文件
-      const uploadPromises = fileURLs.map(url => fetchAndUploadFile(url));
-      const results = await Promise.all(uploadPromises);
-      
-      for (const result of results) {
-        uploadedFiles.push({
-          uri: result.uploadedFile.uri,
-          mimeType: result.mimeType
-        });
+
+    // --- 2. 处理 newchat (当前用户消息) ---
+    // 扣子工具发送的 newchat 是一个对象，包含 input (text) 和 fileURL
+    const currentUserParts: any[] = [];
+    if (data.newchat) {
+      if (typeof data.newchat.input === "string") {
+        currentUserParts.push(data.newchat.input);
       }
-    } else if (!hasNewFormat) {
-      // 处理旧格式中的uri参数
-      if (data.uri) {
-        uploadedFiles.push({
-          uri: data.uri,
-          mimeType: data.mimeType || "image/jpeg"
-        });
-      } else if (data.content && data.content.fileData && data.content.fileData.uri) {
-        uploadedFiles.push({
-          uri: data.content.fileData.uri,
-          mimeType: data.content.fileData.mimeType || "image/jpeg"
-        });
+
+      // newchat.fileURL 可以是字符串或字符串数组
+      let currentFileURLs: string[] = [];
+      if (typeof data.newchat.fileURL === "string") {
+        currentFileURLs = [data.newchat.fileURL];
+      } else if (Array.isArray(data.newchat.fileURL)) {
+        currentFileURLs = data.newchat.fileURL.filter((url: any) => typeof url === "string");
+      }
+
+      for (const url of currentFileURLs) {
+        // 当前消息的文件总是需要上传到 Gemini File API (除非它已经是 Gemini URI)
+        if (url.startsWith("file://") || url.startsWith("https://generativelanguage.googleapis.com/v1beta/files/")) {
+            currentUserParts.push(createPartFromUri(url, "image/jpeg")); // 假设是图片，或需要更智能的MIME判断
+        } else {
+            const { uploadedFile, mimeType } = await fetchAndUploadFile(url);
+            currentUserParts.push(createPartFromUri(uploadedFile.uri, mimeType));
+        }
       }
     }
-    
-    // 如果没有文件且不是新格式，返回错误
-    if (uploadedFiles.length === 0 && !hasNewFormat && messageHistory.length === 0) {
-      return new Response(JSON.stringify({ error: "缺少必要的uri参数或FileURL参数" }), {
+
+    // 如果当前用户有任何内容，添加到 finalContents
+    if (currentUserParts.length > 0) {
+      finalContents.push(createUserContent(currentUserParts, "user"));
+    }
+
+    // --- 3. 最终校验 ---
+    if (finalContents.length === 0) {
+      return new Response(JSON.stringify({ error: "No valid content found in newchat or MessageHistory to send to Gemini." }), {
         status: 400,
         headers: { "Content-Type": "application/json" },
       });
     }
-    
-    // 准备Gemini API请求内容
-     let contents: any;
-     
-     // 如果有历史记录，处理历史记录
-     if (messageHistory.length > 0) {
-       // 转换历史记录为Gemini API格式
-       const formattedHistory = messageHistory.map(msg => {
-         // 简单检查消息格式，避免过度验证影响性能
-         const role = msg.role === "user" ? "user" : "model";
-         
-         // 处理包含文件数据的消息
-         if (msg.fileData && msg.fileData.uri) {
-           return {
-             role,
-             parts: [
-               { inlineData: { mimeType: msg.fileData.mimeType || "image/jpeg", data: msg.fileData.uri } },
-               { text: msg.content || "" }
-             ]
-           };
-         }
-         
-         // 处理纯文本消息
-         return {
-           role,
-           parts: [{ text: msg.content || "" }]
-         };
-       });
-       
-       // 添加当前用户消息
-       const currentUserParts: any[] = [];
-       
-       // 添加上传的文件
-       for (const file of uploadedFiles) {
-         currentUserParts.push(createPartFromUri(file.uri, file.mimeType));
-       }
-       
-       // 添加用户提示文本
-       currentUserParts.push(userPrompt);
-       
-       // 创建完整的请求内容
-       contents = [...formattedHistory, createUserContent(currentUserParts)];
-     } else {
-       // 没有历史记录，只使用当前消息
-       const parts: any[] = [];
-       
-       // 添加上传的文件
-       for (const file of uploadedFiles) {
-         parts.push(createPartFromUri(file.uri, file.mimeType));
-       }
-       
-       // 添加用户提示文本
-       parts.push(userPrompt);
-       
-       contents = createUserContent(parts);
-     }
-    
-    // 调用Gemini API生成内容
-    const response = await ai.models.generateContent({
+
+    // --- 4. 调用 Gemini API ---
+    console.log("Sending contents to Gemini:", JSON.stringify(finalContents, null, 2)); // 打印发送给Gemini的内容
+    const geminiResponse = await ai.models.generateContent({
       model: MODEL,
-      contents: contents,
+      contents: finalContents,
     });
     
-    // 返回简化的响应
+    // 从Gemini响应中提取文本内容
+    const generatedText = geminiResponse.candidates?.[0]?.content?.parts?.[0]?.text || "";
+
+    // --- 5. 返回结果 ---
     return new Response(JSON.stringify({
       success: true,
-      content: response.candidates?.[0]?.content?.parts?.[0]?.text || "",
-      uri: uploadedFiles.length > 0 ? uploadedFiles.map((f: FileInfo) => f.uri) : undefined,
-      mimeType: uploadedFiles.length > 0 ? uploadedFiles.map((f: FileInfo) => f.mimeType) : undefined
+      response: generatedText, // 将 Gemini 生成的文本放在 'response' 字段
+      // 根据你的需求，这里可以返回更多信息，例如第一个上传文件的 URI
+      // 如果需要返回多个文件 URI/MIME Type，则需要更复杂的结构
+      // 这里只是一个简化示例，返回原始 fileURLs 作为参考
+      uploaded_file_urls: (data.newchat && (typeof data.newchat.fileURL === "string" || Array.isArray(data.newchat.fileURL))) ? data.newchat.fileURL : undefined,
     }), {
       headers: { "Content-Type": "application/json" },
     });
-  } catch (error) {
-    console.error("处理JSON请求时出错:", error);
-    return new Response(JSON.stringify({ error: error.message }), {
+
+  } catch (error: any) {
+    console.error("Error in handleJsonRequest:", error);
+    return new Response(JSON.stringify({ 
+      success: false,
+      response: `Internal Server Error: ${error.message || "Unknown error"}`,
+      details: error.stack // 方便调试，但在生产环境可能不适合直接返回
+    }), {
       status: 500,
       headers: { "Content-Type": "application/json" },
     });
   }
 }
 
-// 处理请求
+// 全局请求处理函数
 async function handler(req: Request): Promise<Response> {
-  // 允许跨域请求
   const headers = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
   };
   
-  // 处理预检请求
+  // 处理预检请求 (CORS)
   if (req.method === "OPTIONS") {
     return new Response(null, { headers });
   }
   
-  // 只接受POST请求
+  // 只接受 POST 请求
   if (req.method !== "POST") {
-    return new Response(JSON.stringify({ error: "只支持POST请求" }), {
+    return new Response(JSON.stringify({ error: "Only POST method is allowed." }), {
       status: 405,
       headers: { ...headers, "Content-Type": "application/json" },
     });
   }
   
   try {
-    // 检查Content-Type
     const contentType = req.headers.get("Content-Type") || "";
     
-    if (contentType.includes("multipart/form-data")) {
-      // 处理表单数据
-      const formData = await req.formData();
-      return await handleFileUpload(formData);
-    } else if (contentType.includes("application/json")) {
-      // 处理JSON请求
+    // 只处理 application/json 类型
+    if (contentType.includes("application/json")) {
       const data = await req.json();
+      console.log("Received JSON data from Coze tool:", JSON.stringify(data, null, 2)); // 打印接收到的数据
       return await handleJsonRequest(data);
     } else {
-      return new Response(JSON.stringify({ error: "请使用multipart/form-data格式上传文件或application/json格式发送请求" }), {
+      return new Response(JSON.stringify({ error: "Unsupported Content-Type. Please use application/json." }), {
         status: 400,
         headers: { ...headers, "Content-Type": "application/json" },
       });
     }
-  } catch (error) {
-    console.error("处理请求时出错:", error);
-    return new Response(JSON.stringify({ error: error.message }), {
+  } catch (error: any) {
+    console.error("Error processing request:", error);
+    return new Response(JSON.stringify({ 
+      success: false,
+      response: `Request processing failed: ${error.message || "Unknown error"}`,
+      details: error.stack
+    }), {
       status: 500,
       headers: { ...headers, "Content-Type": "application/json" },
     });
@@ -315,6 +200,5 @@ async function handler(req: Request): Promise<Response> {
 }
 
 // 启动服务器
-console.log("启动服务器在端口8000...");
+console.log("Deno Deploy server started on port 8000...");
 serve(handler, { port: 8000 });
-
